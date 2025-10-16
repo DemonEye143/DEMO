@@ -11,7 +11,7 @@
     "chalk": "^5.3.0",
     "express": "^4.18.2",
     "node-cache": "^5.1.2",
-    "awesome-phonenumber": "^2.89.0",
+    "awesome-phonenumber": "^2.64.0",
     "file-type": "^18.3.0",
     "axios": "^1.6.8",
     "@hapi/boom": "^10.0.1"
