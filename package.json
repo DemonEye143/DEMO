@@ -1,19 +1,29 @@
 {
-  "name": "knight-bot",
+  "name": "knightbot",
   "version": "1.0.0",
+  "description": "WhatsApp Bot",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js --pairing-code"
+    "start": "node index.js",
+    "dev": "node index.js"
   },
+  "keywords": ["whatsapp-bot"],
+  "author": "",
+  "license": "ISC",
   "dependencies": {
-    "@whiskeysockets/baileys": "^6.7.0",
-    "pino": "^9.0.0",
-    "chalk": "^5.3.0",
-    "express": "^4.18.2",
-    "node-cache": "^5.1.2",
+    "@hapi/boom": "^10.0.1",
+    "@whiskeysockets/baileys": "^6.4.0",
     "awesome-phonenumber": "^2.64.0",
-    "file-type": "^18.3.0",
-    "axios": "^1.6.8",
-    "@hapi/boom": "^10.0.1"
+    "axios": "^1.6.0",
+    "chalk": "^4.1.2",
+    "node-cache": "^5.1.2",
+    "pino": "^8.0.0",
+    "qrcode-terminal": "^0.12.0",
+    "libphonenumber-js": "^1.10.0",
+    "express": "^4.18.0",
+    "dotenv": "^16.4.5"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
