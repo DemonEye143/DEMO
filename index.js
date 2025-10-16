@@ -1,13 +1,6 @@
 /**
  * Knight Bot - A WhatsApp Bot
- * Copyright (c) 2024 Professor
- * 
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the MIT License.
- * 
- * Credits:
- * - Baileys Library by @adiwajshing
- * - Pair Code implementation inspired by TechGod143 & DGXEON
+ * Modified for Vercel Deployment
  */
 require('./settings')
 const { Boom } = require('@hapi/boom')
@@ -18,7 +11,6 @@ const path = require('path')
 const axios = require('axios')
 const { handleMessages, handleGroupParticipantUpdate, handleStatus } = require('./main');
 const PhoneNumber = require('awesome-phonenumber')
-const { imageToWebp, videoToWebp, writeExifImg, writeExifVid } = require('./lib/exif')
 const { smsg, isUrl, generateMessageTag, getBuffer, getSizeMedia, fetch, await, sleep, reSize } = require('./lib/myfunc')
 const {
     default: makeWASocket,
@@ -37,68 +29,72 @@ const {
     delay
 } = require("@whiskeysockets/baileys")
 const NodeCache = require("node-cache")
-// Using a lightweight persisted store instead of makeInMemoryStore (compat across versions)
 const pino = require("pino")
-const readline = require("readline")
-const { parsePhoneNumber } = require("libphonenumber-js")
-const { PHONENUMBER_MCC } = require('@whiskeysockets/baileys/lib/Utils/generics')
-const { rmSync, existsSync } = require('fs')
-const { join } = require('path')
+const express = require('express')
 
 // Import lightweight store
 const store = require('./lib/lightweight_store')
+
+// Initialize Express for Vercel
+const app = express()
+app.use(express.json())
+
+// Vercel-specific session path
+const SESSION_PATH = '/tmp/session'
 
 // Initialize store
 store.readFromFile()
 const settings = require('./settings')
 setInterval(() => store.writeToFile(), settings.storeWriteInterval || 10000)
 
-// Memory optimization - Force garbage collection if available
-setInterval(() => {
-    if (global.gc) {
-        global.gc()
-        console.log('🧹 Garbage collection completed')
-    }
-}, 60_000) // every 1 minute
-
-// Memory monitoring - Restart if RAM gets too high
-setInterval(() => {
-    const used = process.memoryUsage().rss / 1024 / 1024
-    if (used > 400) {
-        console.log('⚠️ RAM too high (>400MB), restarting bot...')
-        process.exit(1) // Panel will auto-restart
-    }
-}, 30_000) // check every 30 seconds
-
-let phoneNumber = "911234567890"
-let owner = JSON.parse(fs.readFileSync('./data/owner.json'))
+let phoneNumber = process.env.PHONE_NUMBER || "911234567890"
+let owner = process.env.OWNER_NUMBER || "1234567890"
 
 global.botname = "KNIGHT BOT"
 global.themeemoji = "•"
-const pairingCode = !!phoneNumber || process.argv.includes("--pairing-code")
-const useMobile = process.argv.includes("--mobile")
+const pairingCode = !!phoneNumber
 
-// Only create readline interface if we're in an interactive environment
-const rl = process.stdin.isTTY ? readline.createInterface({ input: process.stdin, output: process.stdout }) : null
-const question = (text) => {
-    if (rl) {
-        return new Promise((resolve) => rl.question(text, resolve))
-    } else {
-        // In non-interactive environment, use ownerNumber from settings
-        return Promise.resolve(settings.ownerNumber || phoneNumber)
-    }
-}
+// Web QR Code endpoint
+app.get('/', async (req, res) => {
+    res.send(`
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Knight Bot - WhatsApp</title>
+        <style>
+            body { font-family: Arial; text-align: center; padding: 50px; }
+            .container { max-width: 500px; margin: 0 auto; }
+            .qr-code { margin: 20px 0; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>🤖 Knight Bot</h1>
+            <p>Scan the QR code below with WhatsApp</p>
+            <div class="qr-code" id="qrcode"></div>
+            <p>Or enter pairing code in terminal</p>
+        </div>
+    </body>
+    </html>
+    `)
+})
 
+// Health check endpoint
+app.get('/health', (req, res) => {
+    res.json({ status: 'Bot is running', timestamp: new Date().toISOString() })
+})
 
 async function startXeonBotInc() {
     let { version, isLatest } = await fetchLatestBaileysVersion()
-    const { state, saveCreds } = await useMultiFileAuthState(`./session`)
+    
+    // Use /tmp for session storage in Vercel
+    const { state, saveCreds } = await useMultiFileAuthState(SESSION_PATH)
     const msgRetryCounterCache = new NodeCache()
 
     const XeonBotInc = makeWASocket({
         version,
         logger: pino({ level: 'silent' }),
-        printQRInTerminal: !pairingCode,
+        printQRInTerminal: true,
         browser: ["Ubuntu", "Chrome", "20.0.04"],
         auth: {
             creds: state.creds,
@@ -106,7 +102,6 @@ async function startXeonBotInc() {
         },
         markOnlineOnConnect: true,
         generateHighQualityLinkPreview: true,
-        syncFullHistory: true,
         getMessage: async (key) => {
             let jid = jidNormalizedUser(key.remoteJid)
             let msg = await store.loadMessage(jid, key.id)
@@ -131,37 +126,16 @@ async function startXeonBotInc() {
             if (!XeonBotInc.public && !mek.key.fromMe && chatUpdate.type === 'notify') return
             if (mek.key.id.startsWith('BAE5') && mek.key.id.length === 16) return
 
-            // Clear message retry cache to prevent memory bloat
-            if (XeonBotInc?.msgRetryCounterCache) {
-                XeonBotInc.msgRetryCounterCache.clear()
-            }
-
             try {
                 await handleMessages(XeonBotInc, chatUpdate, true)
             } catch (err) {
                 console.error("Error in handleMessages:", err)
-                // Only try to send error message if we have a valid chatId
-                if (mek.key && mek.key.remoteJid) {
-                    await XeonBotInc.sendMessage(mek.key.remoteJid, {
-                        text: '❌ An error occurred while processing your message.',
-                        contextInfo: {
-                            forwardingScore: 1,
-                            isForwarded: true,
-                            forwardedNewsletterMessageInfo: {
-                                newsletterJid: '120363161513685998@newsletter',
-                                newsletterName: 'KnightBot MD',
-                                serverMessageId: -1
-                            }
-                        }
-                    }).catch(console.error);
-                }
             }
         } catch (err) {
             console.error("Error in messages.upsert:", err)
         }
     })
 
-    // Add these event handlers for better functionality
     XeonBotInc.decodeJid = (jid) => {
         if (!jid) return jid
         if (/:\d+@/gi.test(jid)) {
@@ -196,39 +170,26 @@ async function startXeonBotInc() {
     }
 
     XeonBotInc.public = true
-
     XeonBotInc.serializeM = (m) => smsg(XeonBotInc, m, store)
 
     // Handle pairing code
     if (pairingCode && !XeonBotInc.authState.creds.registered) {
-        if (useMobile) throw new Error('Cannot use pairing code with mobile api')
-
-        let phoneNumber
-        if (!!global.phoneNumber) {
-            phoneNumber = global.phoneNumber
-        } else {
-            phoneNumber = await question(chalk.bgBlack(chalk.greenBright(`Please type your WhatsApp number 😍\nFormat: 6281376552730 (without + or spaces) : `)))
-        }
-
-        // Clean the phone number - remove any non-digit characters
-        phoneNumber = phoneNumber.replace(/[^0-9]/g, '')
-
-        // Validate the phone number using awesome-phonenumber
+        let cleanNumber = phoneNumber.replace(/[^0-9]/g, '')
+        
         const pn = require('awesome-phonenumber');
-        if (!pn('+' + phoneNumber).isValid()) {
-            console.log(chalk.red('Invalid phone number. Please enter your full international number (e.g., 15551234567 for US, 447911123456 for UK, etc.) without + or spaces.'));
-            process.exit(1);
+        if (!pn('+' + cleanNumber).isValid()) {
+            console.log(chalk.red('Invalid phone number in environment variables.'));
+            return;
         }
 
         setTimeout(async () => {
             try {
-                let code = await XeonBotInc.requestPairingCode(phoneNumber)
+                let code = await XeonBotInc.requestPairingCode(cleanNumber)
                 code = code?.match(/.{1,4}/g)?.join("-") || code
                 console.log(chalk.black(chalk.bgGreen(`Your Pairing Code : `)), chalk.black(chalk.white(code)))
-                console.log(chalk.yellow(`\nPlease enter this code in your WhatsApp app:\n1. Open WhatsApp\n2. Go to Settings > Linked Devices\n3. Tap "Link a Device"\n4. Enter the code shown above`))
+                console.log(chalk.yellow(`\nPlease enter this code in your WhatsApp app`))
             } catch (error) {
                 console.error('Error requesting pairing code:', error)
-                console.log(chalk.red('Failed to get pairing code. Please check your phone number and try again.'))
             }
         }, 3000)
     }
@@ -237,50 +198,14 @@ async function startXeonBotInc() {
     XeonBotInc.ev.on('connection.update', async (s) => {
         const { connection, lastDisconnect } = s
         if (connection == "open") {
-            console.log(chalk.magenta(` `))
             console.log(chalk.yellow(`🌿Connected to => ` + JSON.stringify(XeonBotInc.user, null, 2)))
-
-            const botNumber = XeonBotInc.user.id.split(':')[0] + '@s.whatsapp.net';
-            await XeonBotInc.sendMessage(botNumber, {
-                text: `🤖 𝐋𝐮𝐜𝐢𝐟𝐞𝐫 𝐁𝐨𝐭 𝐀𝐜𝐭𝐢𝐯𝐞!! 🌈™
-──────────────────────────
-⏰ 𝐓𝐢𝐦𝐞: ${new Date().toLocaleString()}
-✅ 𝐒𝐭𝐚𝐭𝐮𝐬: 𝐎𝐧𝐥𝐢𝐧𝐞 & 𝐑𝐞𝐚𝐝𝐲!
-
-🔗 𝐉𝐨𝐢𝐧 𝐨𝐮𝐫 𝐓𝐞𝐥𝐞𝐠𝐫𝐚𝐦 𝐂𝐡𝐚𝐧𝐧𝐞𝐥:
-👉 [𝐂𝐡𝐚𝐧𝐧𝐞𝐥](https://t.me/NEXT_DYS)
-
-▶️ 𝐖𝐚𝐭𝐜𝐡 𝐨𝐮𝐫 𝐘𝐨𝐮𝐓𝐮𝐛𝐞 𝐂𝐨𝐧𝐭𝐞𝐧𝐭:
-👉 [𝐘𝐨𝐮𝐓𝐮𝐛𝐞](https://www.youtube.com/demoneeye_official)
-
-🌟 𝐓𝐡𝐚𝐧𝐤 𝐲𝐨𝐮 𝐟𝐨𝐫 𝐛𝐞𝐢𝐧𝐠 𝐰𝐢𝐭𝐡 𝐮𝐬!`,
-                contextInfo: {
-                    forwardingScore: 1,
-                    isForwarded: true,
-                    forwardedNewsletterMessageInfo: {
-                        newsletterJid: '120363402805853702@newsletter',
-                        newsletterName: '𝐋𝐮𝐜𝐢𝐟𝐞𝐫....!!🌈™',
-                        serverMessageId: -1
-                    }
-                }
-            });
-
-            await delay(1999)
-            console.log(chalk.yellow(`\n\n                  ${chalk.bold.blue(`[ ${global.botname || '𝐍𝐈𝐓𝐑𝐎 𝐗 𝐁𝐎𝐓....!!🌈™ ⚡'} ]`)}\n\n`))
-            console.log(chalk.cyan(`< ================================================== >`))
-            console.log(chalk.magenta(`\n${global.themeemoji || '•'} YT CHANNEL: 𝘿𝙀𝙈𝙊𝙉_𝙀𝙔𝙀`))
-            console.log(chalk.magenta(`${global.themeemoji || '•'} GITHUB: 𝐃𝐞𝐦𝐨𝐧𝐄𝐲𝐞1️⃣4️⃣3️⃣ 👁️‍🗨️🔥`))
-            console.log(chalk.magenta(`${global.themeemoji || '•'} WA NUMBER: ${owner}`))
-            console.log(chalk.magenta(`${global.themeemoji || '•'} CREDIT: 𝐋𝐮𝐜𝐢𝐟𝐞𝐫....!!`))
-            console.log(chalk.green(`${global.themeemoji || '•'} 🤖 𝐁𝐨𝐭 𝐂𝐨𝐧𝐧𝐞𝐜𝐭𝐞𝐝 ✅ 𝐒𝐮𝐜𝐜𝐞𝐬𝐬𝐟𝐮𝐥𝐥𝐲⚡ ✅`))
-            console.log(chalk.blue(`Bot Version: ${settings.version}`))
+            
+            console.log(chalk.yellow(`\n\n[ ${global.botname} ]\n\n`))
+            console.log(chalk.green(`🤖 Bot Connected Successfully ✅`))
         }
         if (connection === 'close') {
             const statusCode = lastDisconnect?.error?.output?.statusCode
             if (statusCode === DisconnectReason.loggedOut || statusCode === 401) {
-                try {
-                    rmSync('./session', { recursive: true, force: true })
-                } catch { }
                 console.log(chalk.red('Session logged out. Please re-authenticate.'))
                 startXeonBotInc()
             } else {
@@ -289,86 +214,24 @@ async function startXeonBotInc() {
         }
     })
 
-    // Track recently-notified callers to avoid spamming messages
-    const antiCallNotified = new Set();
-
-    // Anticall handler: block callers when enabled
-    XeonBotInc.ev.on('call', async (calls) => {
-        try {
-            const { readState: readAnticallState } = require('./commands/anticall');
-            const state = readAnticallState();
-            if (!state.enabled) return;
-            for (const call of calls) {
-                const callerJid = call.from || call.peerJid || call.chatId;
-                if (!callerJid) continue;
-                try {
-                    // First: attempt to reject the call if supported
-                    try {
-                        if (typeof XeonBotInc.rejectCall === 'function' && call.id) {
-                            await XeonBotInc.rejectCall(call.id, callerJid);
-                        } else if (typeof XeonBotInc.sendCallOfferAck === 'function' && call.id) {
-                            await XeonBotInc.sendCallOfferAck(call.id, callerJid, 'reject');
-                        }
-                    } catch {}
-
-                    // Notify the caller only once within a short window
-                    if (!antiCallNotified.has(callerJid)) {
-                        antiCallNotified.add(callerJid);
-                        setTimeout(() => antiCallNotified.delete(callerJid), 60000);
-                        await XeonBotInc.sendMessage(callerJid, { text: '📵 Anticall is enabled. Your call was rejected and you will be blocked.' });
-                    }
-                } catch {}
-                // Then: block after a short delay to ensure rejection and message are processed
-                setTimeout(async () => {
-                    try { await XeonBotInc.updateBlockStatus(callerJid, 'block'); } catch {}
-                }, 800);
-            }
-        } catch (e) {
-            // ignore
-        }
-    });
-
     XeonBotInc.ev.on('creds.update', saveCreds)
-
     XeonBotInc.ev.on('group-participants.update', async (update) => {
         await handleGroupParticipantUpdate(XeonBotInc, update);
-    });
-
-    XeonBotInc.ev.on('messages.upsert', async (m) => {
-        if (m.messages[0].key && m.messages[0].key.remoteJid === 'status@broadcast') {
-            await handleStatus(XeonBotInc, m);
-        }
-    });
-
-    XeonBotInc.ev.on('status.update', async (status) => {
-        await handleStatus(XeonBotInc, status);
-    });
-
-    XeonBotInc.ev.on('messages.reaction', async (status) => {
-        await handleStatus(XeonBotInc, status);
     });
 
     return XeonBotInc
 }
 
-
-// Start the bot with error handling
-startXeonBotInc().catch(error => {
-    console.error('Fatal error:', error)
-    process.exit(1)
-})
-process.on('uncaughtException', (err) => {
-    console.error('Uncaught Exception:', err)
-})
-
-process.on('unhandledRejection', (err) => {
-    console.error('Unhandled Rejection:', err)
+// Start bot and server
+const PORT = process.env.PORT || 3000
+app.listen(PORT, async () => {
+    console.log(`🚀 Server running on port ${PORT}`)
+    try {
+        await startXeonBotInc()
+    } catch (error) {
+        console.error('Failed to start bot:', error)
+    }
 })
 
-let file = require.resolve(__filename)
-fs.watchFile(file, () => {
-    fs.unwatchFile(file)
-    console.log(chalk.redBright(`Update ${__filename}`))
-    delete require.cache[file]
-    require(file)
-})
+// Export for Vercel
+module.exports = app
